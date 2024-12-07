@@ -1,119 +1,100 @@
-﻿using System;
-using System.Collections.Generic;
+﻿using Microsoft.Extensions.Logging;
 using System.Data.SqlClient;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
+using Test_Assessment.Interfaces;
 
 namespace Test_Assessment.Queries
 {
-    public class DatabaseQueries
+    public class DatabaseQueries(DatabaseSettings settings, ILogger<DatabaseQueries> logger) : IDatabaseQueries
     {
-        private readonly string _connectionString;
-
-        public DatabaseQueries(string connectionString)
+        private readonly string _connectionString = settings.ConnectionString
+                ?? throw new ArgumentNullException(nameof(settings.ConnectionString), "Connection string is not configured.");
+        public async Task ExecuteQueriesAsync()
         {
-            _connectionString = connectionString;
-        }
+            using var connection = new SqlConnection(_connectionString);
+            await connection.OpenAsync();
 
-        public (int PULocationId, decimal AverageTipAmount) GetHighestAverageTipLocation(SqlConnection connection)
-        {
-            string query = @"
-                SELECT TOP 1 PULocationID, AVG(tip_amount) AS AverageTipAmount
-                FROM [ETL].[dbo].[TripModel]
-                GROUP BY PULocationID
-                ORDER BY AverageTipAmount DESC;
-            ";
+            // Query 1: Highest average tip amount
+            var highestTip = await GetHighestAverageTipLocationAsync(connection);
+            logger.LogInformation($"Highest average tip: {highestTip.AverageTipAmount} at PULocationID {highestTip.PULocationId}");
 
-            using (var command = new SqlCommand(query, connection))
+            // Query 2: Top 100 longest fares by distance
+            var longestByDistance = await GetTop100LongestFaresByDistanceAsync(connection);
+            logger.LogInformation("Top 100 longest fares by distance:");
+            foreach (var fare in longestByDistance)
             {
-                using (var reader = command.ExecuteReader())
-                {
-                    if (reader.Read())
-                    {
-                        return (reader.GetInt32(0), reader.GetDecimal(1));
-                    }
-                }
+                logger.LogInformation($"Id: {fare.Id}, Distance: {fare.TripDistance}");
             }
 
-            return (0, 0); 
+            // Query 3: Top 100 longest fares by time
+            var longestByTime = await GetTop100LongestFaresByTimeAsync(connection);
+            logger.LogInformation("Top 100 longest fares by time:");
+            foreach (var fare in longestByTime)
+            {
+                logger.LogInformation($"Id: {fare.Id}, Duration: {fare.Duration}");
+            }
+
+            // Query 4: Search trips by Pickup Location ID
+            var trips = await SearchTripsByPULocationIdAsync(connection, 239);
+            logger.LogInformation("Trips for Pickup Location ID 239:");
+            foreach (var trip in trips)
+            {
+                logger.LogInformation($"Id: {trip.Id}, Pickup: {trip.PickupDatetime}, Dropoff: {trip.DropoffDatetime}, PULocationId: {trip.PULocationId}");
+            }
         }
 
-        public List<(int Id, double TripDistance)> GetTop100LongestFaresByDistance(SqlConnection connection)
+        public async Task<(int PULocationId, decimal AverageTipAmount)> GetHighestAverageTipLocationAsync(SqlConnection connection)
         {
-            string query = @"
-                SELECT TOP 100 Id, trip_distance
-                FROM [ETL].[dbo].[TripModel]
-                ORDER BY trip_distance DESC;
-            ";
+            using var command = new SqlCommand(QueryStrings.GetHighestAverageTipLocation, connection);
+            using var reader = await command.ExecuteReaderAsync();
 
+            return reader.Read()
+                ? (reader.GetInt32(0), reader.GetDecimal(1))
+                : (0, 0);
+        }
+
+        public async Task<List<(int Id, double TripDistance)>> GetTop100LongestFaresByDistanceAsync(SqlConnection connection)
+        {
             var results = new List<(int Id, double TripDistance)>();
+            using var command = new SqlCommand(QueryStrings.GetTop100LongestFaresByDistance, connection);
+            using var reader = await command.ExecuteReaderAsync();
 
-            using (var command = new SqlCommand(query, connection))
+            while (reader.Read())
             {
-                using (var reader = command.ExecuteReader())
-                {
-                    while (reader.Read())
-                    {
-                        results.Add((reader.GetInt32(0), reader.GetDouble(1)));
-                    }
-                }
+                results.Add((reader.GetInt32(0), reader.GetDouble(1)));
             }
 
             return results;
         }
 
-        public List<(int Id, TimeSpan Duration)> GetTop100LongestFaresByTime(SqlConnection connection)
+        public async Task<List<(int Id, TimeSpan Duration)>> GetTop100LongestFaresByTimeAsync(SqlConnection connection)
         {
-            string query = @"
-                SELECT TOP 100 Id, DATEDIFF(SECOND, tpep_pickup_datetime, tpep_dropoff_datetime) AS DurationInSeconds
-                FROM [ETL].[dbo].[TripModel]
-                ORDER BY DurationInSeconds DESC;
-            ";
-
             var results = new List<(int Id, TimeSpan Duration)>();
+            using var command = new SqlCommand(QueryStrings.GetTop100LongestFaresByTime, connection);
+            using var reader = await command.ExecuteReaderAsync();
 
-            using (var command = new SqlCommand(query, connection))
+            while (reader.Read())
             {
-                using (var reader = command.ExecuteReader())
-                {
-                    while (reader.Read())
-                    {
-                        var duration = TimeSpan.FromSeconds(reader.GetInt32(1));
-                        results.Add((reader.GetInt32(0), duration));
-                    }
-                }
+                results.Add((reader.GetInt32(0), TimeSpan.FromSeconds(reader.GetInt32(1))));
             }
 
             return results;
         }
 
-        public List<(int Id, DateTime PickupDatetime, DateTime DropoffDatetime, int PULocationId)> SearchTripsByPULocationId(SqlConnection connection, int pulocationId)
+        public async Task<List<(int Id, DateTime PickupDatetime, DateTime DropoffDatetime, int PULocationId)>> SearchTripsByPULocationIdAsync(SqlConnection connection, int pulocationId)
         {
-            string query = @"
-                SELECT Id, tpep_pickup_datetime, tpep_dropoff_datetime, PULocationID
-                FROM [ETL].[dbo].[TripModel]
-                WHERE PULocationID = @PULocationId;
-            ";
-
             var results = new List<(int Id, DateTime PickupDatetime, DateTime DropoffDatetime, int PULocationId)>();
+            using var command = new SqlCommand(QueryStrings.SearchTripsByPULocationId, connection);
+            command.Parameters.AddWithValue("@PULocationId", pulocationId);
 
-            using (var command = new SqlCommand(query, connection))
+            using var reader = await command.ExecuteReaderAsync();
+            while (reader.Read())
             {
-                command.Parameters.AddWithValue("@PULocationId", pulocationId);
-
-                using (var reader = command.ExecuteReader())
-                {
-                    while (reader.Read())
-                    {
-                        results.Add((
-                            reader.GetInt32(0),
-                            reader.GetDateTime(1),
-                            reader.GetDateTime(2),
-                            reader.GetInt32(3)
-                        ));
-                    }
-                }
+                results.Add((
+                    reader.GetInt32(0),
+                    reader.GetDateTime(1),
+                    reader.GetDateTime(2),
+                    reader.GetInt32(3)
+                ));
             }
 
             return results;

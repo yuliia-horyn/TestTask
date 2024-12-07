@@ -1,50 +1,33 @@
 ﻿using CsvHelper;
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using System.Globalization;
-using System.IO;
+using Test_Assessment.Helpers;
 using Test_Assessment.Interfaces;
 using Test_Assessment.Model;
 
-public class DataProcessor : IDataProcessor
-{
-    private readonly ICsvParser _csvParser;
-    private readonly IDatabaseInserter _databaseInserter;
-    private readonly IFileWriter _fileWriter;
-    private readonly IConfiguration _configuration;
-    private readonly ILogger<DataProcessor> _logger;
-
-    public DataProcessor(
-        ICsvParser csvParser,
+public class DataProcessor(
+        IDataParser csvParser,
         IDatabaseInserter databaseInserter,
         IFileWriter fileWriter,
-        IConfiguration configuration,
-        ILogger<DataProcessor> logger)
-    {
-        _csvParser = csvParser;
-        _databaseInserter = databaseInserter;
-        _fileWriter = fileWriter;
-        _configuration = configuration;
-        _logger = logger;
-    }
+        PathService pathService,
+        ILogger<DataProcessor> logger) : IDataProcessor
+{
 
     public async Task ProcessDataAsync()
     {
-        string path = Path.Combine(Directory.GetCurrentDirectory(), @"..\..\..");
-        string absolutePath = Path.GetFullPath(path);
-        string csvFilePath = Path.Combine(absolutePath, "Data", "sample-cab-data.csv");
-        string duplicatesCsvPath = Path.Combine(absolutePath, "Data", "duplicates.csv");
-        string errorsCsvPath = Path.Combine(absolutePath, "Data", "errors.csv");
+        var csvFilePath = pathService.CsvFilePath;
+        var duplicatesCsvPath = pathService.DuplicatesCsvPath;
+        var errorsCsvPath = pathService.ErrorsCsvPath;
 
         if (string.IsNullOrEmpty(csvFilePath))
         {
-            _logger.LogError("CSV file path is not provided or is empty.");
+            logger.LogError("CSV file path is not provided or is empty.");
             return;
         }
 
         if (!File.Exists(csvFilePath))
         {
-            _logger.LogError($"The CSV file does not exist at path: {csvFilePath}");
+            logger.LogError($"The CSV file does not exist at path: {csvFilePath}");
             return;
         }
 
@@ -55,50 +38,48 @@ public class DataProcessor : IDataProcessor
 
         try
         {
-            using (var fileReader = new StreamReader(csvFilePath))
-            using (var csvReader = new CsvReader(fileReader, CultureInfo.InvariantCulture))
+            using var fileReader = new StreamReader(csvFilePath);
+            using var csvReader = new CsvReader(fileReader, CultureInfo.InvariantCulture);
+
+            csvReader.Read();
+            csvReader.ReadHeader();
+
+            int currentRowIndex = 1;
+            while (csvReader.Read())
             {
-                csvReader.Read();
-                csvReader.ReadHeader();
+                currentRowIndex++;
+                var parseResult = csvParser.ParseCsvRowToTrip(csvReader);
 
-                int currentRowIndex = 1;
-                while (csvReader.Read())
+                if (!parseResult.IsValid)
                 {
-                    currentRowIndex++;
-                    var parseResult = _csvParser.ParseCsvRowToTrip(csvReader);
+                    errorRecords.Add((currentRowIndex, csvReader.Parser.RawRecord));
+                }
 
-                    if (parseResult.IsValid)
-                    {
-                        var trip = parseResult.Trip;
-                        var tripKey = $"{trip.PickupDatetime}-{trip.DropoffDatetime}-{trip.PassengerCount}";
+                var trip = parseResult.Trip;
+                var tripKey = $"{trip.PickupDatetime}-{trip.DropoffDatetime}-{trip.PassengerCount}";
 
-                        if (processedKeys.Contains(tripKey))
-                            duplicateTrips.Add(trip);
-                        else
-                        {
-                            processedKeys.Add(tripKey);
-                            validTrips.Add(trip);
-                        }
-                    }
-                    else
-                    {
-                        errorRecords.Add((currentRowIndex, csvReader.Parser.RawRecord));
-                    }
+                if (processedKeys.Contains(tripKey))
+                    duplicateTrips.Add(trip);
+                else
+                {
+                    processedKeys.Add(tripKey);
+                    validTrips.Add(trip);
                 }
             }
 
-            _logger.LogInformation("Writing duplicate trips to file.");
-            await _fileWriter.WriteDuplicateTripsAsync(duplicateTrips, duplicatesCsvPath);
 
-            _logger.LogInformation("Writing error records to file.");
-            await _fileWriter.WriteErrorRecordsAsync(errorRecords, errorsCsvPath);
+            logger.LogInformation("Writing duplicate trips to file.");
+            await fileWriter.WriteDuplicateTripsAsync(duplicateTrips, duplicatesCsvPath);
 
-            _logger.LogInformation("Inserting valid trips into the database.");
-            await _databaseInserter.InsertTripsAsync(validTrips);
+            logger.LogInformation("Writing error records to file.");
+            await fileWriter.WriteErrorRecordsAsync(errorRecords, errorsCsvPath);
+
+            logger.LogInformation("Inserting valid trips into the database.");
+            await databaseInserter.InsertTripsAsync(validTrips);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "An error occurred while processing data.");
+            logger.LogError(ex, "An error occurred while processing data.");
         }
     }
 }

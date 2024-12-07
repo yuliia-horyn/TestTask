@@ -1,25 +1,16 @@
 ﻿using CsvHelper;
-using System;
 using System.Globalization;
 using Microsoft.Extensions.Logging;
 using Test_Assessment.Helpers;
 using Test_Assessment.Interfaces;
 using Test_Assessment.Model;
 
-public class CsvParser : ICsvParser
+public class DataParser(ILogger<CsvParser> logger) : IDataParser
 {
-    private readonly ILogger<CsvParser> _logger;
-
-    public CsvParser(ILogger<CsvParser> logger)
-    {
-        _logger = logger;
-    }
-
     public (bool IsValid, TripModel Trip) ParseCsvRowToTrip(CsvReader csvReader)
     {
         try
         {
-            // Отримання значень з CSV та їх обробка
             var trip = new TripModel
             {
                 PickupDatetime = ParseDate(csvReader.GetField(ColumnMappings.PickupDatetime)),
@@ -33,21 +24,20 @@ public class CsvParser : ICsvParser
                 TipAmount = ParseFieldWithDefault<decimal>(csvReader, ColumnMappings.TipAmount, 0)
             };
 
-            // Валідація об'єкта TripModel
             var validator = new TripModelValidator();
             var validationResult = validator.Validate(trip);
 
             if (!validationResult.IsValid)
             {
-                _logger.LogWarning("Validation failed for trip: {Errors}", validationResult.Errors);
-                return (false, null);
+                logger.LogWarning("Validation failed for trip: {Errors}", validationResult.Errors);
+                return (false, trip);
             }
 
             return (true, trip);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error parsing CSV row.");
+            logger.LogError(ex, "Error parsing CSV row.");
             return (false, null);
         }
     }
@@ -73,7 +63,7 @@ public class CsvParser : ICsvParser
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Invalid date value: {DateValue}", dateValue);
+            logger.LogWarning(ex, "Invalid date value: {DateValue}", dateValue);
             throw;
         }
     }
@@ -86,7 +76,7 @@ public class CsvParser : ICsvParser
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Error parsing field {ColumnName}, using default value: {DefaultValue}", columnName, defaultValue);
+            logger.LogWarning("Error parsing field {ColumnName}, using default value: {DefaultValue}", columnName, defaultValue);
             return defaultValue;
         }
     }
